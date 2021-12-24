@@ -25,9 +25,13 @@ As I say, **Building games above this engine is not the first level target**! Th
 cargo run --example simple
 ```
 
+## Mainly Used Crates
+* [winit](https://github.com/rust-windowing/winit): cross-platform window creator and manager. 
+* [wgpu](https://wgpu.rs/): cross-platform graphics API wrapper. (support Vulkan, Metal, Dx12, Dx11, Gl, BrowserWebGpu)
+
 ## Reference
-* [bevy](https://github.com/bevyengine/bevy)
-* [amethyst](https://github.com/amethyst/amethyst)
+* [bevy](https://github.com/bevyengine/bevy) : A refreshingly simple data-driven game engine written in Rust. it's my favorite game engine. 
+* [amethyst](https://github.com/amethyst/amethyst) : Data-oriented and data-driven game engine written in Rust.
 
 
 [crate]: https://crates.io/crates/eyengine
