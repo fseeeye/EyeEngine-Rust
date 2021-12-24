@@ -17,6 +17,9 @@ They are completely independent and have different architecture & development pl
 
 As I say, **Building games above this engine is not the first level target**! The main purpose of those projects is helping me to learn modern 3D Game Engine, Graphic API & SL and practice Computer Grahpic theory. 
 
+## About Rust Edition
+I will build it from "top layer" for learning modern abstraction of grahic API and so on. So, it will be more like a Render at the beginning.
+
 ## Getting Started
 1. Instal Rust lang and comfirm your Rust toolchain is **nightly**. I like to use latest features.
 2. Run example. For now, there is only one example to test my project working well:
