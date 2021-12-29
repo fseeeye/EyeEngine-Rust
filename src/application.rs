@@ -37,7 +37,7 @@ pub trait Application {
                 Event::WindowEvent {
                     ref event,
                     window_id
-                } if window_id == window.id() => if !state.input(event) { // if this Window Event isn't processed
+                } if window_id == window.id() => if !state.input(event) { // if this Window Event isn't processed by GPUState::input()
                     match event {
                         // if get "window close" or "keyboard input `ESC`" event, end loop. 
                         WindowEvent::CloseRequested

@@ -1,5 +1,5 @@
 use winit::{
-    event::WindowEvent,
+    event::{WindowEvent, KeyboardInput, VirtualKeyCode, ElementState},
     window::Window
 };
 
@@ -14,7 +14,9 @@ pub(crate) struct GPUState {
     config: wgpu::SurfaceConfiguration,
     pub(crate) size: winit::dpi::PhysicalSize<u32>,
     clear_color: wgpu::Color,
-    render_pipeline: wgpu::RenderPipeline
+    render_pipeline: wgpu::RenderPipeline,
+    render_pipeline_hidden: wgpu::RenderPipeline,
+    show_hidden_color: bool
 }
 
 // ref: https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/
@@ -32,7 +34,7 @@ impl GPUState {
         };
 
         /* Instace */
-        // Create wgpu Instace, whose main purpose is to create Adapter(s) and Surface(s)
+        // Create wgpu Instace, whose is a handle to our GPU to create Adapter(s) and Surface(s)
         let instance = wgpu::Instance::new(wgpu::Backends::all()); // Backens:all => Vulkan + Metal + DX12 + Browser WebGPU
 
         /* Surface */
@@ -83,77 +85,120 @@ impl GPUState {
         surface.configure(&device, &config);
 
         /* Pipeline */ 
-        // Load Shaders (WGSL)
-        let shader_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-            label: Some("Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into())
-        });
-        let vertex_shader_ref = &shader_module;
-        let fragment_shader_ref = &shader_module;
-        let vertex_entry = "vs_main";
-        let fragment_entry = "fs_main";
-        // Load Shaders (GLSL/HLSL)
-        //let vertex_shader_module = device.create_shader_module(&wgpu::include_spirv!("shader.vert.spv"));
-        //let fragment_shader_module = device.create_shader_module(&wgpu::include_spirv!("shader.frag.spv"));
-        //let vertex_shader_ref = &vertex_shader_module;
-        //let fragment_shader_ref = &fragment_shader_module;
-        //let vertex_entry = "main";
-        //let fragment_entry = "main";
         // Create "Pipeline Layout"
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
             bind_group_layouts: &[],
             push_constant_ranges: &[]
         });
-        // Create "Render Pipeline"
+
+        // Load "Shaders" - 1 (WGSL)
+        let shader_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+            label: Some("Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shader.wgsl").into())
+        });
+        let vertex_shader_ref = &shader_module;
+        let fragment_shader_ref = &shader_module;
+        let vertex_entry = "vs_main";
+        let fragment_entry = "fs_main";
+        // Load "Shaders" - 1 (GLSL/HLSL)
+        //let vertex_shader_module = device.create_shader_module(&wgpu::include_spirv!("shaders/shader.vert.spv"));
+        //let fragment_shader_module = device.create_shader_module(&wgpu::include_spirv!("shaders/shader.frag.spv"));
+        //let vertex_shader_ref = &vertex_shader_module;
+        //let fragment_shader_ref = &fragment_shader_module;
+        //let vertex_entry = "main";
+        //let fragment_entry = "main";
+        
+        // Create "Render Pipeline" - 1
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
+            label: Some("Render Pipeline - 1"),
             layout: Some(&render_pipeline_layout),
-            // setup vertex shader
             vertex: wgpu::VertexState {
                 module: vertex_shader_ref,
-                entry_point: vertex_entry, // specify the entry point of vertex shader in shader file
-                buffers: &[], // what type of vertices we want to pass to the vertex shader
+                entry_point: vertex_entry, 
+                buffers: &[], 
             },
-            // setup fragment shader
-            // this is technically optional, so you have to wrap it in Some(). 
-            // We need it if we want to store color data to the surface.
             fragment: Some(wgpu::FragmentState { 
                 module: fragment_shader_ref,
                 entry_point: fragment_entry,
-                // tells wgpu what color outputs it should set up.
-                // Currently, we only need one for the "Surface"
                 targets: &[wgpu::ColorTargetState { 
                     format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE), // REPLACE : replace old pixel data with new data
-                    write_mask: wgpu::ColorWrites::ALL // ALL: write to all colors (R G B A)
+                    blend: Some(wgpu::BlendState::REPLACE), 
+                    write_mask: wgpu::ColorWrites::ALL 
                 }]
             }),
-            // describes how to interpret our vertices when converting them into triangles.
-            // == OpenGL Vertex Buffer Layout
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList, // TriangleList: each three vertices will correspond to one triangle.
+                topology: wgpu::PrimitiveTopology::TriangleList, 
                 strip_index_format: None,
-                // `front_face` & `cull_mode`: how to determine whether a given triangle is facing forward or not.
-                front_face: wgpu::FrontFace::Ccw, // Ccw: triangle is facing forward if the vertices are arranged in a counter-clockwise direction.
-                cull_mode: Some(wgpu::Face::Back), // Back: triangles that are not facing forward are culled (not included in the render)
-                // tips: Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
+                front_face: wgpu::FrontFace::Ccw, 
+                cull_mode: Some(wgpu::Face::Back), 
                 polygon_mode: wgpu::PolygonMode::Fill,
-                // tips: Requires Features::DEPTH_CLAMPING
                 unclipped_depth: false,
-                // tips: Requires Features::CONSERVATIVE_RASTERIZATION
                 conservative: false,
             },
-            depth_stencil: None, // not using a depth/stencil buffer yet
+            depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                // how many samples the pipeline will use
                 count: 1,
-                // which samples should be active
-                mask: !0, // !0 means using all of them
-                alpha_to_coverage_enabled: false, // not covering anti-aliasing yet
+                mask: !0,
+                alpha_to_coverage_enabled: false,
             },
-            multiview: None // ?
+            multiview: None
         });
+
+        // Load "Shaders" - 2 (WGSL)
+        let shader_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+            label: Some("Shader2"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shader2.wgsl").into())
+        });
+        let vertex_shader_ref = &shader_module;
+        let fragment_shader_ref = &shader_module;
+        let vertex_entry = "vs_main";
+        let fragment_entry = "fs_main";
+        // Load "Shaders" - 2 (GLSL/HLSL)
+        //let vertex_shader_module = device.create_shader_module(&wgpu::include_spirv!("shaders/shader2.vert.spv"));
+        //let fragment_shader_module = device.create_shader_module(&wgpu::include_spirv!("shaders/shader2.frag.spv"));
+        //let vertex_shader_ref = &vertex_shader_module;
+        //let fragment_shader_ref = &fragment_shader_module;
+        //let vertex_entry = "main";
+        //let fragment_entry = "main";
+        
+        // Create "Render Pipeline" - 2
+        let render_pipeline_hidden = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Render Pipeline - Hidden"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: vertex_shader_ref,
+                entry_point: vertex_entry, 
+                buffers: &[], 
+            },
+            fragment: Some(wgpu::FragmentState { 
+                module: fragment_shader_ref,
+                entry_point: fragment_entry,
+                targets: &[wgpu::ColorTargetState { 
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE), 
+                    write_mask: wgpu::ColorWrites::ALL
+                }]
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList, 
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw, 
+                cull_mode: Some(wgpu::Face::Back), 
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None
+        });
+
+        let show_hidden_color = false;
 
         Self {
             instance,
@@ -164,7 +209,9 @@ impl GPUState {
             config,
             size,
             clear_color,
-            render_pipeline
+            render_pipeline,
+            render_pipeline_hidden,
+            show_hidden_color
         }
     }
 
@@ -193,7 +240,18 @@ impl GPUState {
                     a: 1.0
                 };
                 true
-            }
+            },
+            WindowEvent::KeyboardInput {
+                input: KeyboardInput {
+                    state,
+                    virtual_keycode: Some(VirtualKeyCode::Space),
+                    ..
+                },
+                ..
+            } => {
+                self.show_hidden_color = *state == ElementState::Pressed;
+                true
+            },
             _ => false
         }
     }
@@ -242,8 +300,15 @@ impl GPUState {
                 depth_stencil_attachment: None
             });
 
-            // set specific Pipeline to RenderPass
-            render_pass.set_pipeline(&self.render_pipeline);
+            // specific Pipeline to RenderPass
+            render_pass.set_pipeline(
+                if self.show_hidden_color {
+                    &self.render_pipeline_hidden
+                } else {
+                    &self.render_pipeline
+                }
+            );
+            // Draw Call: send vertex index & instance id to wgpu
             render_pass.draw(0..3, 0..1);
         }
 
