@@ -1,7 +1,53 @@
+use wgpu::util::DeviceExt; // for `create_buffer_init`
 use winit::{
     event::{WindowEvent, KeyboardInput, VirtualKeyCode, ElementState},
     window::Window
 };
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Zeroable, bytemuck::Pod)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3]
+}
+
+impl Vertex {
+    // get Vertex Layout
+    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            // stride defines how wide a vertex is.
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            // step mode tells the pipeline how often it should move to the next vertex.
+            step_mode: wgpu::VertexStepMode::Vertex,  // specify wgpu::VertexStepMode::Instance if we only want to change vertices when we start drawing a new instance.
+            // vertex attributes describe the individual parts of the vertex.
+            attributes: &[
+                // attribute: position
+                wgpu::VertexAttribute {
+                    // define the offset in bytes of this attribute startpoint.
+                    offset: 0, 
+                    // tell the shader what location to store this attribute at.
+                    shader_location: 0, 
+                    // tell the shader the shape of the attribute.
+                    format: wgpu::VertexFormat::Float32x3
+                },
+                // attribute: color
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3
+                }
+            ]
+            // attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3]
+        }
+    }
+}
+
+// vertex attribute data for Vertex Buffer
+const VERTICES: &[Vertex] = &[
+    Vertex { position: [0.0, 0.5, 0.0], color: [1.0, 0.0, 0.0] },
+    Vertex { position: [-0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0] },
+    Vertex { position: [0.5, -0.5, 0.0], color: [0.0, 0.0, 1.0] },
+];
 
 pub(crate) struct GPUState {
     #[allow(dead_code)]
@@ -16,7 +62,9 @@ pub(crate) struct GPUState {
     clear_color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
     render_pipeline_hidden: wgpu::RenderPipeline,
-    show_hidden_color: bool
+    show_hidden_color: bool,
+    vertex_buffer: wgpu::Buffer,
+    vertices_num: u32
 }
 
 // ref: https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/
@@ -112,37 +160,60 @@ impl GPUState {
         // Create "Render Pipeline" - 1
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline - 1"),
+            // setup Pipeline Layout
             layout: Some(&render_pipeline_layout),
+            // setup Vertex Shader
             vertex: wgpu::VertexState {
+                // specify the shader module
                 module: vertex_shader_ref,
-                entry_point: vertex_entry, 
-                buffers: &[], 
+                // specify the entry point of vertex shader in shader file
+                entry_point: vertex_entry,
+                // layout of the vertices which we want to pass to the vertex shader
+                buffers: &[ 
+                    Vertex::desc()
+                ],
             },
-            fragment: Some(wgpu::FragmentState { 
+            // setup Fragment Shader
+            // this is technically optional, so you have to wrap it in Some(). 
+            // We need it if we want to store color data to the surface.
+            fragment: Some(wgpu::FragmentState {
                 module: fragment_shader_ref,
+                // specify the entry point of fragment shader in shader file
                 entry_point: fragment_entry,
-                targets: &[wgpu::ColorTargetState { 
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE), 
-                    write_mask: wgpu::ColorWrites::ALL 
-                }]
+                // tells wgpu what color outputs it should set up.
+                // Currently, we only need one for the "Surface"
+                targets: &[
+                    wgpu::ColorTargetState { 
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::REPLACE), // REPLACE : replace old pixel data with new data
+                        write_mask: wgpu::ColorWrites::ALL // ALL: write all color channels (R G B A)
+                    }
+                ]
             }),
+            // describes how to interpret our vertices when converting them into triangles.
+            // == OpenGL Vertex Buffer Layout
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList, 
+                topology: wgpu::PrimitiveTopology::TriangleList, // TriangleList: each three vertices will correspond to one triangle.
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw, 
-                cull_mode: Some(wgpu::Face::Back), 
+                // `front_face` & `cull_mode`: how to determine whether a given triangle is facing forward or not.
+                front_face: wgpu::FrontFace::Ccw, // Ccw: triangle is facing forward if the vertices are arranged in a counter-clockwise direction.
+                cull_mode: Some(wgpu::Face::Back), // Back: triangles that are not facing forward are culled (not included in the render)
+                // tips: Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
                 polygon_mode: wgpu::PolygonMode::Fill,
+                // tips: Enable requires Features::DEPTH_CLAMPING
                 unclipped_depth: false,
+                // tips: Enable requires Features::CONSERVATIVE_RASTERIZATION
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: None, // not using a depth/stencil buffer yet
             multisample: wgpu::MultisampleState {
+                // how many samples the pipeline will use
                 count: 1,
-                mask: !0,
+                // which samples should be active
+                mask: !0, // !0 means using all of them
                 alpha_to_coverage_enabled: false,
             },
-            multiview: None
+            multiview: None // ?
         });
 
         // Load "Shaders" - 2 (WGSL)
@@ -169,16 +240,20 @@ impl GPUState {
             vertex: wgpu::VertexState {
                 module: vertex_shader_ref,
                 entry_point: vertex_entry, 
-                buffers: &[], 
+                buffers: &[
+                    Vertex::desc()
+                ], 
             },
             fragment: Some(wgpu::FragmentState { 
                 module: fragment_shader_ref,
                 entry_point: fragment_entry,
-                targets: &[wgpu::ColorTargetState { 
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE), 
-                    write_mask: wgpu::ColorWrites::ALL
-                }]
+                targets: &[
+                    wgpu::ColorTargetState { 
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::REPLACE), 
+                        write_mask: wgpu::ColorWrites::ALL
+                    }
+                ]
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList, 
@@ -200,6 +275,16 @@ impl GPUState {
 
         let show_hidden_color = false;
 
+        /* Vertex Buffer */
+        let vertex_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                contents: bytemuck::cast_slice(VERTICES), // cast VERTICES to &[u8]
+                usage: wgpu::BufferUsages::VERTEX
+            }
+        );
+        let vertices_num = VERTICES.len() as u32;
+
         Self {
             instance,
             surface,
@@ -211,7 +296,9 @@ impl GPUState {
             clear_color,
             render_pipeline,
             render_pipeline_hidden,
-            show_hidden_color
+            show_hidden_color,
+            vertex_buffer,
+            vertices_num
         }
     }
 
@@ -300,7 +387,7 @@ impl GPUState {
                 depth_stencil_attachment: None
             });
 
-            // specific Pipeline to RenderPass
+            // specify Render Pipeline to current RenderPass
             render_pass.set_pipeline(
                 if self.show_hidden_color {
                     &self.render_pipeline_hidden
@@ -308,8 +395,10 @@ impl GPUState {
                     &self.render_pipeline
                 }
             );
+            // send Vertex Buffer data to current RenderPass
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..)); // send entire data in vertex_buffer to slot 0
             // Draw Call: send vertex index & instance id to wgpu
-            render_pass.draw(0..3, 0..1);
+            render_pass.draw(0..self.vertices_num, 0..1);
         }
 
         // finish the command buffer, and to submit it to the GPU's render queue
