@@ -8,7 +8,7 @@ use winit::{
 #[derive(Copy, Clone, Debug, bytemuck::Zeroable, bytemuck::Pod)]
 struct Vertex {
     position: [f32; 3],
-    color: [f32; 3]
+    color: [f32; 3] // color space depends on `surface.get_preferred_format()`, mostly sRGB
 }
 
 impl Vertex {
@@ -43,10 +43,23 @@ impl Vertex {
 }
 
 // vertex attribute data for Vertex Buffer
+// tips: sRGB 0.2176 == RGB 0.5 (srgb_color = (rgb_color / 255) ^ 2.2)
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [0.0, 0.5, 0.0], color: [1.0, 0.0, 0.0] },
-    Vertex { position: [-0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0] },
-    Vertex { position: [0.5, -0.5, 0.0], color: [0.0, 0.0, 1.0] },
+    Vertex { position: [-0.0868241, 0.49240386, 0.0], color: [0.2176, 0.0, 0.2176] }, // A
+    Vertex { position: [-0.49513406, 0.06958647, 0.0], color: [0.2176, 0.0, 0.2176] }, // B
+    Vertex { position: [-0.21918549, -0.44939706, 0.0], color: [0.2176, 0.0, 0.2176] }, // C
+    Vertex { position: [0.35966998, -0.3473291, 0.0], color: [0.2176, 0.0, 0.2176] }, // D
+    Vertex { position: [0.44147372, 0.2347359, 0.0], color: [0.2176, 0.0, 0.2176] }, // E
+];
+
+// indices data for Index Buffer
+// tips: add 2 bytes padding as wgpu requires buffers to be aligned to 4 bytes.
+// tips: We don't need to implement Pod and Zeroable for our indices, because bytemuck has already implemented them for basic types such as u16.
+const INDICES: &[u16] = &[
+    0, 1, 4,
+    1, 2, 4,
+    2, 3, 4,
+    /* padding */ 0,
 ];
 
 pub(crate) struct GPUState {
@@ -64,7 +77,8 @@ pub(crate) struct GPUState {
     render_pipeline_hidden: wgpu::RenderPipeline,
     show_hidden_color: bool,
     vertex_buffer: wgpu::Buffer,
-    vertices_num: u32
+    index_buffer: wgpu::Buffer,
+    indices_num: u32
 }
 
 // ref: https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/
@@ -283,7 +297,16 @@ impl GPUState {
                 usage: wgpu::BufferUsages::VERTEX
             }
         );
-        let vertices_num = VERTICES.len() as u32;
+
+        /* Index Buffer */
+        let index_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Index Buffer"),
+                contents: bytemuck::cast_slice(INDICES), // cast VERTICES to &[u8]
+                usage: wgpu::BufferUsages::INDEX
+            }
+        );
+        let indices_num = INDICES.len() as u32;
 
         Self {
             instance,
@@ -298,7 +321,8 @@ impl GPUState {
             render_pipeline_hidden,
             show_hidden_color,
             vertex_buffer,
-            vertices_num
+            index_buffer,
+            indices_num
         }
     }
 
@@ -396,9 +420,13 @@ impl GPUState {
                 }
             );
             // send Vertex Buffer data to current RenderPass
+            // tips: we could set multiple vertex buffer to a render pass
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..)); // send entire data in vertex_buffer to slot 0
+            // send Index Buffer to current RenderPass
+            // tips: we only could set one index buffer to a render pass
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             // Draw Call: send vertex index & instance id to wgpu
-            render_pass.draw(0..self.vertices_num, 0..1);
+            render_pass.draw_indexed(0..self.indices_num, 0, 0..1);
         }
 
         // finish the command buffer, and to submit it to the GPU's render queue
