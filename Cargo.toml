@@ -18,6 +18,8 @@ env_logger = "0.9" # logger for wgpu.
 legion = "0.4" # ECS library
 nalgebra = "0.29" # Linear algebra library
 bytemuck = { version = "1.7", features = ["derive"] } # casting between plain data types.
+image = "0.23" # image loader for texture
+anyhow = "1" # error handler
 
 pollster = "0.2" # (Temp) minimal async executor
 

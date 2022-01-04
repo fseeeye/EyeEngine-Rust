@@ -8,7 +8,7 @@ use winit::{
 #[derive(Copy, Clone, Debug, bytemuck::Zeroable, bytemuck::Pod)]
 struct Vertex {
     position: [f32; 3],
-    color: [f32; 3] // color space depends on `surface.get_preferred_format()`, mostly sRGB
+    tex_coords: [f32; 2] // color space depends on `surface.get_preferred_format()`, mostly sRGB
 }
 
 impl Vertex {
@@ -30,11 +30,11 @@ impl Vertex {
                     // tell the shader the shape of the attribute.
                     format: wgpu::VertexFormat::Float32x3
                 },
-                // attribute: color
+                // attribute: texture coordinates
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3
+                    format: wgpu::VertexFormat::Float32x2
                 }
             ]
             // attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3]
@@ -45,11 +45,11 @@ impl Vertex {
 // vertex attribute data for Vertex Buffer
 // tips: sRGB 0.2176 == RGB 0.5 (srgb_color = (rgb_color / 255) ^ 2.2)
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [-0.0868241, 0.49240386, 0.0], color: [0.2176, 0.0, 0.2176] }, // A
-    Vertex { position: [-0.49513406, 0.06958647, 0.0], color: [0.2176, 0.0, 0.2176] }, // B
-    Vertex { position: [-0.21918549, -0.44939706, 0.0], color: [0.2176, 0.0, 0.2176] }, // C
-    Vertex { position: [0.35966998, -0.3473291, 0.0], color: [0.2176, 0.0, 0.2176] }, // D
-    Vertex { position: [0.44147372, 0.2347359, 0.0], color: [0.2176, 0.0, 0.2176] }, // E
+    Vertex { position: [-0.0868241, 0.49240386, 0.0],   tex_coords: [0.4131759, 0.00759614], }, // A
+    Vertex { position: [-0.49513406, 0.06958647, 0.0],  tex_coords: [0.0048659444, 0.43041354] }, // B
+    Vertex { position: [-0.21918549, -0.44939706, 0.0], tex_coords: [0.28081453, 0.949397] }, // C
+    Vertex { position: [0.35966998, -0.3473291, 0.0],   tex_coords: [0.85967, 0.84732914] }, // D
+    Vertex { position: [0.44147372, 0.2347359, 0.0],    tex_coords: [0.9414737, 0.2652641] }, // E
 ];
 
 // indices data for Index Buffer
@@ -63,22 +63,23 @@ const INDICES: &[u16] = &[
 ];
 
 pub(crate) struct GPUState {
-    #[allow(dead_code)]
-    instance: wgpu::Instance,
     surface: wgpu::Surface,
-    #[allow(dead_code)]
-    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pub(crate) size: winit::dpi::PhysicalSize<u32>,
     clear_color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
-    render_pipeline_hidden: wgpu::RenderPipeline,
-    show_hidden_color: bool,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    indices_num: u32
+    indices_num: u32,
+    #[allow(dead_code)]
+    diffuse_texture: super::texture::Texture,
+    diffuse_bind_group: wgpu::BindGroup,
+    #[allow(dead_code)]
+    cartoon_texture: super::texture::Texture,
+    cartoon_bind_group: wgpu::BindGroup,
+    is_space_pressed: bool,
 }
 
 // ref: https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/
@@ -146,11 +147,88 @@ impl GPUState {
         };
         surface.configure(&device, &config);
 
+        /* Texture */
+        let diffuse_bytes = include_bytes!("res/happy-tree.png");
+        let diffuse_texture = super::texture::Texture::from_bytes(&device, &queue, diffuse_bytes, Some("happy tree texture")).unwrap();
+
+        // Create "BindGroup Layout": the layout of "BindGroup"
+        let texture_bind_group_layout = device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("texture bind group layout"),
+                entries: &[
+                    // entry for a sampled texture
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        // shader visibility
+                        visibility: wgpu::ShaderStages::FRAGMENT, // visible only to the fragment shader
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    // entry for a sampler
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    }
+                ]
+            }
+        );
+        // Create "BindGroup" to bind texture: describes a set of resources and how they can be accessed by a shader
+        // each texutre and sampler we create will need to be added to a "BindGroup"
+        // BindGroup is a more specific declaration of the BindGroupLayout. 
+        // The reason they're separate is that it allows us to swap out BindGroups on the fly, so long as they all share the same BindGroupLayout. 
+        let diffuse_bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("diffuse bind group"),
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                    }
+                ]
+            }
+        );
+
+        let cartoon_bytes = include_bytes!("res/happy-tree-cartoon.png");
+        let cartoon_texture = super::texture::Texture::from_bytes(&device, &queue, cartoon_bytes, Some("happy tree cartoon texture")).unwrap();
+
+        // Create "BindGroup" to bind texture: describes a set of resources and how they can be accessed by a shader
+        // each texutre and sampler we create will need to be added to a "BindGroup"
+        // BindGroup is a more specific declaration of the BindGroupLayout. 
+        // The reason they're separate is that it allows us to swap out BindGroups on the fly, so long as they all share the same BindGroupLayout. 
+        let cartoon_bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("cartoon bind group"),
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&cartoon_texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&cartoon_texture.sampler),
+                    }
+                ]
+            }
+        );
+
         /* Pipeline */ 
         // Create "Pipeline Layout"
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[],
+            // set all "BindGroup Layout"
+            bind_group_layouts: &[&texture_bind_group_layout],
             push_constant_ranges: &[]
         });
 
@@ -230,65 +308,6 @@ impl GPUState {
             multiview: None // ?
         });
 
-        // Load "Shaders" - 2 (WGSL)
-        let shader_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-            label: Some("Shader2"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shader2.wgsl").into())
-        });
-        let vertex_shader_ref = &shader_module;
-        let fragment_shader_ref = &shader_module;
-        let vertex_entry = "vs_main";
-        let fragment_entry = "fs_main";
-        // Load "Shaders" - 2 (GLSL/HLSL)
-        //let vertex_shader_module = device.create_shader_module(&wgpu::include_spirv!("shaders/shader2.vert.spv"));
-        //let fragment_shader_module = device.create_shader_module(&wgpu::include_spirv!("shaders/shader2.frag.spv"));
-        //let vertex_shader_ref = &vertex_shader_module;
-        //let fragment_shader_ref = &fragment_shader_module;
-        //let vertex_entry = "main";
-        //let fragment_entry = "main";
-        
-        // Create "Render Pipeline" - 2
-        let render_pipeline_hidden = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline - Hidden"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: vertex_shader_ref,
-                entry_point: vertex_entry, 
-                buffers: &[
-                    Vertex::desc()
-                ], 
-            },
-            fragment: Some(wgpu::FragmentState { 
-                module: fragment_shader_ref,
-                entry_point: fragment_entry,
-                targets: &[
-                    wgpu::ColorTargetState { 
-                        format: config.format,
-                        blend: Some(wgpu::BlendState::REPLACE), 
-                        write_mask: wgpu::ColorWrites::ALL
-                    }
-                ]
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList, 
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw, 
-                cull_mode: Some(wgpu::Face::Back), 
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None
-        });
-
-        let show_hidden_color = false;
-
         /* Vertex Buffer */
         let vertex_buffer = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
@@ -309,20 +328,21 @@ impl GPUState {
         let indices_num = INDICES.len() as u32;
 
         Self {
-            instance,
             surface,
-            adapter,
             device,
             queue,
             config,
             size,
             clear_color,
             render_pipeline,
-            render_pipeline_hidden,
-            show_hidden_color,
             vertex_buffer,
             index_buffer,
-            indices_num
+            indices_num,
+            diffuse_texture,
+            diffuse_bind_group,
+            cartoon_texture,
+            cartoon_bind_group,
+            is_space_pressed: false
         }
     }
 
@@ -360,7 +380,7 @@ impl GPUState {
                 },
                 ..
             } => {
-                self.show_hidden_color = *state == ElementState::Pressed;
+                self.is_space_pressed = *state == ElementState::Pressed;
                 true
             },
             _ => false
@@ -412,13 +432,14 @@ impl GPUState {
             });
 
             // specify Render Pipeline to current RenderPass
-            render_pass.set_pipeline(
-                if self.show_hidden_color {
-                    &self.render_pipeline_hidden
-                } else {
-                    &self.render_pipeline
-                }
-            );
+            render_pass.set_pipeline(&self.render_pipeline);
+            // specify bind group
+            let bind_group = if self.is_space_pressed {
+                &self.cartoon_bind_group
+            } else {
+                &self.diffuse_bind_group
+            };
+            render_pass.set_bind_group(0, bind_group, &[]);
             // send Vertex Buffer data to current RenderPass
             // tips: we could set multiple vertex buffer to a render pass
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..)); // send entire data in vertex_buffer to slot 0

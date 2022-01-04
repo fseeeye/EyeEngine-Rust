@@ -1,5 +1,6 @@
 mod application;
 mod gpu;
+mod texture;
 mod transform;
 
 pub use application::Application;
