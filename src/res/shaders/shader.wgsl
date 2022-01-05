@@ -1,8 +1,20 @@
 // doc: https://www.w3.org/TR/WGSL/
+// doc: https://gpuweb.github.io/gpuweb/wgsl/
 
 /// Vertex shader
 
-// the input of vertex shader
+// uniforms
+// According to the WGSL Spec, The block decorator indicates this structure type represents
+// the contents of a buffer resource occupying a single binding slot in the shader’s resource interface. 
+// Any structure used as a uniform must be annotated with [[block]]
+struct CameraUniform {
+    view_proj: mat4x4<f32>;
+};
+// bind group num & binding num
+[[group(1), binding(0)]]
+var<uniform> camera: CameraUniform;
+
+// the input of vertex shader (from Vertex Buffer)
 struct VertexInput {
     [[location(0)]] position: vec3<f32>;
     [[location(1)]] tex_coords: vec2<f32>;
@@ -26,7 +38,7 @@ fn vs_main(
     var out: VertexOutput;
 
     out.tex_coords = model.tex_coords;
-    out.clip_position = vec4<f32>(model.position, 1.0);
+    out.clip_position = camera.view_proj * vec4<f32>(model.position, 1.0);
 
     return out;
 }

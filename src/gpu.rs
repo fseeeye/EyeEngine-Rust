@@ -62,6 +62,169 @@ const INDICES: &[u16] = &[
     /* padding */ 0,
 ];
 
+// The coordinate system in Wgpu is based on DirectX, and Metal's coordinate systems.
+// So that in normalized device coordinates the z axis is 0.0 to +1.0.
+// But nalgebra crate are built for OpenGL's coordinate system whose z axis is -1.0 to +1.0.
+// Thus, we need to translate matrix from OpenGL to Wgpu coord system.
+// ref: https://github.com/gfx-rs/gfx/tree/master/src/backend/dx12
+// ref: https://github.com/gfx-rs/gfx/tree/master/src/backend/gl
+#[rustfmt::skip]
+pub const OPENGL_TO_WGPU_MATRIX: nalgebra::Matrix4<f32> = nalgebra::Matrix4::new(
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.5, 0.0,
+    0.0, 0.0, 0.5, 1.0,
+);
+
+// We need this for Rust to store our data correctly for the shaders
+#[repr(C)]
+// This is so we can store this in a buffer
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct CameraUniform {
+    // We can't use nalgebra Matrix4 with bytemuck directly so we'll have
+    // to convert the Matrix4 into a 4x4 f32 array
+    view_proj_matrix: [[f32; 4]; 4],
+}
+
+impl CameraUniform {
+    fn new() -> Self {
+        Self {
+            view_proj_matrix: nalgebra::Matrix4::identity().into()
+        }
+    }
+
+    fn update_view_proj(&mut self, camera: &Camera) {
+        self.view_proj_matrix = camera.build_view_projection_matrix().into()
+    }
+}
+
+struct CameraController {
+    speed: f32,
+    is_up_pressed: bool,
+    is_down_pressed: bool,
+    is_forward_pressed: bool,
+    is_backward_pressed: bool,
+    is_left_pressed: bool,
+    is_right_pressed: bool,
+}
+
+impl CameraController {
+    fn new(speed: f32) -> Self {
+        Self {
+            speed,
+            is_up_pressed: false,
+            is_down_pressed: false,
+            is_forward_pressed: false,
+            is_backward_pressed: false,
+            is_left_pressed: false,
+            is_right_pressed: false,
+        }
+    }
+
+    fn process_events(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::KeyboardInput {
+                input: KeyboardInput {
+                    state,
+                    virtual_keycode: Some(keycode),
+                    ..
+                },
+                ..
+            } => {
+                let is_pressed = *state == ElementState::Pressed;
+                match keycode {
+                    VirtualKeyCode::J => {
+                        self.is_up_pressed = is_pressed;
+                        true
+                    },
+                    VirtualKeyCode::K => {
+                        self.is_down_pressed = is_pressed;
+                        true
+                    },
+                    VirtualKeyCode::W | VirtualKeyCode::Up => {
+                        self.is_forward_pressed = is_pressed;
+                        true
+                    },
+                    VirtualKeyCode::S | VirtualKeyCode::Down => {
+                        self.is_backward_pressed = is_pressed;
+                        true
+                    },
+                    VirtualKeyCode::A | VirtualKeyCode::Left => {
+                        self.is_left_pressed = is_pressed;
+                        true
+                    },
+                    VirtualKeyCode::D | VirtualKeyCode::Right => {
+                        self.is_right_pressed = is_pressed;
+                        true
+                    },
+                    _ => false,
+                }
+            },
+            _ => false,
+        }
+    }
+
+    fn update_camera(&self, camera: &mut Camera) {
+        let forward = camera.target - camera.eye;
+        let forward_norm = forward.normalize();
+        let forward_mag = forward.magnitude();
+
+        if self.is_forward_pressed && forward_mag > self.speed {
+            camera.eye += forward_norm * self.speed;
+        }
+        if self.is_backward_pressed {
+            camera.eye -= forward_norm * self.speed;
+        }
+
+        // new forward direction
+        let forward = camera.target - camera.eye;
+        let forward_mag = forward.magnitude();
+
+        let left = forward_norm.cross(&camera.up);
+        let right = -left;
+
+        // right/left move is rotation around the "target"
+        if self.is_right_pressed {
+            camera.eye = camera.target - (forward + right * self.speed).normalize() * forward_mag;
+        }
+        if self.is_left_pressed {
+            camera.eye = camera.target - (forward +  left * self.speed).normalize() * forward_mag;
+        }
+
+        // up/down move is translation toward/backward "up"
+        if self.is_up_pressed {
+            camera.eye += camera.up * self.speed;
+        }
+        if self.is_down_pressed {
+            camera.eye -= camera.up * self.speed;
+        }
+    }
+}
+
+struct Camera {
+    eye: nalgebra::Point3<f32>,
+    target: nalgebra::Point3<f32>,
+    up: nalgebra::Vector3<f32>,
+    aspect: f32,
+    fovy: f32,
+    znear: f32,
+    zfar: f32
+}
+
+impl Camera {
+    // ref: https://nalgebra.org/docs/user_guide/cg_recipes/#build-a-mvp-matrix
+    fn build_view_projection_matrix(&self) -> nalgebra::Matrix4<f32> {
+        // view tranform matrix (right-handed)
+        // right-handed: camera always look at -z after transform
+        // left-handed:  camera always look at +z after transform
+        let view = nalgebra::Matrix4::look_at_rh(&self.eye, &self.target, &self.up);
+        // projection tranform matrix
+        let proj = nalgebra::Perspective3::new(self.aspect, self.fovy, self.znear, self.zfar);
+
+        return OPENGL_TO_WGPU_MATRIX * proj.as_matrix() * view;
+    }
+}
+
 pub(crate) struct GPUState {
     surface: wgpu::Surface,
     device: wgpu::Device,
@@ -73,6 +236,11 @@ pub(crate) struct GPUState {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     indices_num: u32,
+    camera: Camera,
+    camera_controller: CameraController,
+    camera_uniform: CameraUniform,
+    camera_uniform_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
     #[allow(dead_code)]
     diffuse_texture: super::texture::Texture,
     diffuse_bind_group: wgpu::BindGroup,
@@ -184,7 +352,7 @@ impl GPUState {
         // The reason they're separate is that it allows us to swap out BindGroups on the fly, so long as they all share the same BindGroupLayout. 
         let diffuse_bind_group = device.create_bind_group(
             &wgpu::BindGroupDescriptor {
-                label: Some("diffuse bind group"),
+                label: Some("diffuse texture bind group"),
                 layout: &texture_bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
@@ -208,7 +376,7 @@ impl GPUState {
         // The reason they're separate is that it allows us to swap out BindGroups on the fly, so long as they all share the same BindGroupLayout. 
         let cartoon_bind_group = device.create_bind_group(
             &wgpu::BindGroupDescriptor {
-                label: Some("cartoon bind group"),
+                label: Some("cartoon texture bind group"),
                 layout: &texture_bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
@@ -223,16 +391,77 @@ impl GPUState {
             }
         );
 
+        /* Camera */
+        let camera = Camera {
+            eye: [0.0, 0.0, 2.0].into(), // position of the camera
+            target: [0.0, 0.0, 0.0].into(), // look at which point
+            up: nalgebra::Vector3::y(), // direction of "up"
+            aspect: config.width as f32 / config.height as f32,
+            fovy: 45.0,
+            znear: 0.1,
+            zfar: 100.0,
+        };
+        let camera_controller = CameraController::new(0.1);
+
+        /* Uniform Buffer */
+        let mut camera_uniform = CameraUniform::new();
+        camera_uniform.update_view_proj(&camera);
+
+        // Create Uniform Buffer for camera
+        let camera_uniform_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Camera Uniform Buffer"),
+                contents: bytemuck::cast_slice(&[camera_uniform]), // send view&proj transform matrix to uniform buffer
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }
+        );
+        // Create BindGroup of Uniform Buffer
+        let camera_bind_group_layout = device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("camera bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            // whether this buffer will change size or not,
+                            // This is useful if we want to store an array of things in our uniforms.
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ]
+            }
+        );
+        let camera_bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("camera bind group"),
+                layout: &camera_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: camera_uniform_buffer.as_entire_binding(),
+                    },
+                ]
+            }
+        );
+
+
         /* Pipeline */ 
         // Create "Pipeline Layout"
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
             // set all "BindGroup Layout"
-            bind_group_layouts: &[&texture_bind_group_layout],
+            bind_group_layouts: &[
+                &texture_bind_group_layout,
+                &camera_bind_group_layout,
+            ],
             push_constant_ranges: &[]
         });
 
-        // Load "Shaders" - 1 (WGSL)
+        // Load "Shaders" (WGSL)
         let shader_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("res/shaders/shader.wgsl").into())
@@ -241,17 +470,17 @@ impl GPUState {
         let fragment_shader_ref = &shader_module;
         let vertex_entry = "vs_main";
         let fragment_entry = "fs_main";
-        // Load "Shaders" - 1 (GLSL/HLSL)
-        //let vertex_shader_module = device.create_shader_module(&wgpu::include_spirv!("res/shaders/shader.vert.spv"));
-        //let fragment_shader_module = device.create_shader_module(&wgpu::include_spirv!("res/shaders/shader.frag.spv"));
-        //let vertex_shader_ref = &vertex_shader_module;
-        //let fragment_shader_ref = &fragment_shader_module;
-        //let vertex_entry = "main";
-        //let fragment_entry = "main";
+        // Load "Shaders" (GLSL/HLSL)
+        // let vertex_shader_module = device.create_shader_module(&wgpu::include_spirv!("res/shaders/shader.vert.spv"));
+        // let fragment_shader_module = device.create_shader_module(&wgpu::include_spirv!("res/shaders/shader.frag.spv"));
+        // let vertex_shader_ref = &vertex_shader_module;
+        // let fragment_shader_ref = &fragment_shader_module;
+        // let vertex_entry = "main";
+        // let fragment_entry = "main";
         
-        // Create "Render Pipeline" - 1
+        // Create "Render Pipeline"
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline - 1"),
+            label: Some("Render Pipeline"),
             // setup Pipeline Layout
             layout: Some(&render_pipeline_layout),
             // setup Vertex Shader
@@ -338,6 +567,11 @@ impl GPUState {
             vertex_buffer,
             index_buffer,
             indices_num,
+            camera,
+            camera_controller,
+            camera_uniform,
+            camera_uniform_buffer,
+            camera_bind_group,
             diffuse_texture,
             diffuse_bind_group,
             cartoon_texture,
@@ -362,6 +596,10 @@ impl GPUState {
     // If the method returns true, the main loop won't process the event any further.
     // So the main idea of this function is catching some specific events and handle them in it.
     pub(crate) fn input(&mut self, event: &WindowEvent) -> bool {
+        if self.camera_controller.process_events(&event) {
+            return true;
+        }
+
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.clear_color = wgpu::Color {
@@ -388,8 +626,10 @@ impl GPUState {
     }
 
     pub(crate) fn update(&mut self) {
-        // todo!()
-        // We don't have anything to update yet
+        // update camera data
+        self.camera_controller.update_camera(&mut self.camera);
+        self.camera_uniform.update_view_proj(&self.camera);
+        self.queue.write_buffer(&self.camera_uniform_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
     }
 
     pub(crate) fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -434,12 +674,13 @@ impl GPUState {
             // specify Render Pipeline to current RenderPass
             render_pass.set_pipeline(&self.render_pipeline);
             // specify bind group
-            let bind_group = if self.is_space_pressed {
+            let texture_bind_group = if self.is_space_pressed {
                 &self.cartoon_bind_group
             } else {
                 &self.diffuse_bind_group
             };
-            render_pass.set_bind_group(0, bind_group, &[]);
+            render_pass.set_bind_group(0, texture_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
             // send Vertex Buffer data to current RenderPass
             // tips: we could set multiple vertex buffer to a render pass
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..)); // send entire data in vertex_buffer to slot 0
