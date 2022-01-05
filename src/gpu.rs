@@ -148,7 +148,7 @@ impl GPUState {
         surface.configure(&device, &config);
 
         /* Texture */
-        let diffuse_bytes = include_bytes!("res/happy-tree.png");
+        let diffuse_bytes = include_bytes!("res/textures/happy-tree.png");
         let diffuse_texture = super::texture::Texture::from_bytes(&device, &queue, diffuse_bytes, Some("happy tree texture")).unwrap();
 
         // Create "BindGroup Layout": the layout of "BindGroup"
@@ -199,7 +199,7 @@ impl GPUState {
             }
         );
 
-        let cartoon_bytes = include_bytes!("res/happy-tree-cartoon.png");
+        let cartoon_bytes = include_bytes!("res/textures/happy-tree-cartoon.png");
         let cartoon_texture = super::texture::Texture::from_bytes(&device, &queue, cartoon_bytes, Some("happy tree cartoon texture")).unwrap();
 
         // Create "BindGroup" to bind texture: describes a set of resources and how they can be accessed by a shader
@@ -235,15 +235,15 @@ impl GPUState {
         // Load "Shaders" - 1 (WGSL)
         let shader_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shader.wgsl").into())
+            source: wgpu::ShaderSource::Wgsl(include_str!("res/shaders/shader.wgsl").into())
         });
         let vertex_shader_ref = &shader_module;
         let fragment_shader_ref = &shader_module;
         let vertex_entry = "vs_main";
         let fragment_entry = "fs_main";
         // Load "Shaders" - 1 (GLSL/HLSL)
-        //let vertex_shader_module = device.create_shader_module(&wgpu::include_spirv!("shaders/shader.vert.spv"));
-        //let fragment_shader_module = device.create_shader_module(&wgpu::include_spirv!("shaders/shader.frag.spv"));
+        //let vertex_shader_module = device.create_shader_module(&wgpu::include_spirv!("res/shaders/shader.vert.spv"));
+        //let fragment_shader_module = device.create_shader_module(&wgpu::include_spirv!("res/shaders/shader.frag.spv"));
         //let vertex_shader_ref = &vertex_shader_module;
         //let fragment_shader_ref = &fragment_shader_module;
         //let vertex_entry = "main";
