@@ -25,7 +25,7 @@ impl Vertex {
                 wgpu::VertexAttribute {
                     // define the offset in bytes of this attribute startpoint.
                     offset: 0, 
-                    // tell the shader what location to store this attribute at.
+                    // tell the shader what location store this attribute at.
                     shader_location: 0, 
                     // tell the shader the shape of the attribute.
                     format: wgpu::VertexFormat::Float32x3
@@ -225,6 +225,73 @@ impl Camera {
     }
 }
 
+const NUM_INSTANCES_PER_ROW: u32 = 10;
+const INSTANCE_DISPLACEMENT: nalgebra::Vector3<f32> = nalgebra::Vector3::new(
+    NUM_INSTANCES_PER_ROW as f32 * 0.5, 
+    0.0, 
+    NUM_INSTANCES_PER_ROW as f32 * 0.5
+);
+
+struct Instance {
+    position: nalgebra::Vector3<f32>,
+    // A Quaternion is a mathematical structure often used to represent rotation.
+    // ref: https://mathworld.wolfram.com/Quaternion.html
+    rotation: nalgebra::UnitQuaternion<f32>,
+}
+
+impl Instance {
+    fn to_raw(&self) -> InstanceRaw {
+        InstanceRaw {
+            model: (nalgebra::Matrix4::new_translation(&self.position) * nalgebra::Matrix4::from(self.rotation)).into()
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct InstanceRaw {
+    model: [[f32; 4]; 4]
+}
+
+impl InstanceRaw {
+    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        use std::mem;
+
+        wgpu::VertexBufferLayout {
+            array_stride: mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
+            // We need to switch from using a step mode of Vertex to Instance
+            // This means that our shaders will only change to use the next
+            // instance when the shader starts processing a new instance
+            step_mode: wgpu::VertexStepMode::Instance,
+            // A mat4 takes up 4 vertex slots as it is technically 4 vec4s. We need to define a slot
+            // for each vec4. We'll have to reassemble the mat4 in the shader
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    // start at slot 5 not conflict with other 
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 4]>() as wgpu::BufferAddress,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 12]>() as wgpu::BufferAddress,
+                    shader_location: 8,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ]
+        }
+    }
+}
+
 pub(crate) struct GPUState {
     surface: wgpu::Surface,
     device: wgpu::Device,
@@ -248,6 +315,8 @@ pub(crate) struct GPUState {
     cartoon_texture: super::texture::Texture,
     cartoon_bind_group: wgpu::BindGroup,
     is_space_pressed: bool,
+    instances: Vec<Instance>,
+    instance_buffer: wgpu::Buffer
 }
 
 // ref: https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/
@@ -448,6 +517,31 @@ impl GPUState {
             }
         );
 
+        /* Instances */
+        // Instancing allows us to draw the same object multiple times with different properties (position, orientation, size, color, etc.).
+        // Generate Instances data
+        let instances = (0..NUM_INSTANCES_PER_ROW).flat_map(|z| {
+            (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+                let position = nalgebra::Vector3::from_row_slice(&[x as f32, 0.0, z as f32]) - INSTANCE_DISPLACEMENT;
+
+                let rotation = if position == nalgebra::Vector3::zeros() {
+                    nalgebra::UnitQuaternion::from_axis_angle(&nalgebra::Vector3::z_axis(), 0f32)
+                } else {
+                    nalgebra::UnitQuaternion::from_axis_angle( &nalgebra::base::Unit::new_normalize(position), std::f32::consts::FRAC_PI_4)
+                };
+
+                Instance { position, rotation }
+            })
+        }).collect::<Vec<_>>();
+        let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
+        // Create Instance Buffer (kind of Vertex Buffer)
+        let instance_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Instance (Vertex) Buffer"),
+                contents: bytemuck::cast_slice(&instance_data),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            }
+        );
 
         /* Pipeline */ 
         // Create "Pipeline Layout"
@@ -491,7 +585,8 @@ impl GPUState {
                 entry_point: vertex_entry,
                 // layout of the vertices which we want to pass to the vertex shader
                 buffers: &[ 
-                    Vertex::desc()
+                    Vertex::desc(),
+                    InstanceRaw::desc(),
                 ],
             },
             // setup Fragment Shader
@@ -576,7 +671,9 @@ impl GPUState {
             diffuse_bind_group,
             cartoon_texture,
             cartoon_bind_group,
-            is_space_pressed: false
+            is_space_pressed: false,
+            instances,
+            instance_buffer
         }
     }
 
@@ -630,6 +727,22 @@ impl GPUState {
         self.camera_controller.update_camera(&mut self.camera);
         self.camera_uniform.update_view_proj(&self.camera);
         self.queue.write_buffer(&self.camera_uniform_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+
+        // update instance buffer data
+        for instance in &mut self.instances {
+            let amount_quat = nalgebra::UnitQuaternion::from_axis_angle(&nalgebra::Vector3::y_axis(), std::f32::consts::PI / 180.0);
+            let current_quat = instance.rotation;
+            instance.rotation = amount_quat * current_quat;
+        }
+        let instance_data = self.instances
+            .iter()
+            .map(Instance::to_raw)
+            .collect::<Vec<_>>();
+        self.queue.write_buffer(
+            &self.instance_buffer,
+            0, 
+            bytemuck::cast_slice(&instance_data),
+        );
     }
 
     pub(crate) fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -644,6 +757,7 @@ impl GPUState {
         let mut command_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder")
         });
+        
         {
             // Create a "RenderPass" by CommandEncoder.
             // It has all the methods for the actual drawing.
@@ -683,12 +797,13 @@ impl GPUState {
             render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
             // send Vertex Buffer data to current RenderPass
             // tips: we could set multiple vertex buffer to a render pass
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..)); // send entire data in vertex_buffer to slot 0
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..)); // send vertex_buffer to buffer slot 0
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..)); // send instance_buffer to buffer slot 1
             // send Index Buffer to current RenderPass
             // tips: we only could set one index buffer to a render pass
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             // Draw Call: send vertex index & instance id to wgpu
-            render_pass.draw_indexed(0..self.indices_num, 0, 0..1);
+            render_pass.draw_indexed(0..self.indices_num, 0, 0..self.instances.len() as _);
         }
 
         // finish the command buffer, and to submit it to the GPU's render queue
